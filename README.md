@@ -1,6 +1,7 @@
 # Tensorflow Implementation of Error Correcting Neural Network (ECNN)
 
 This library provides ECNN implemented in Tensorflow, see reference [1].
+A PyTorch reimplementation is included in the files suffixed with `_pytorch.py` and mirrors the training and evaluation pipeline of the original code.
 
 ## Access to our generated code matrices
 
@@ -9,7 +10,6 @@ https://drive.google.com/drive/folders/1tSMJQfcs9wyMz2XZBwAzBk0YCi4mhQfs?usp=sha
 ## References
 
 [1] Y. Song, Q. Kang, and W. P. Tay, "Error-correcting output codes with ensemble diversity for robust learning in neural networks." *AAAI Conference on Artificial Intelligence.* 2021. [[arxiv]](https://arxiv.org/abs/1912.00181)
-
 
 ---
 
@@ -22,4 +22,3 @@ If you found this library useful in your research, please consider citing.
   year={2021}
 }
 ```
-
