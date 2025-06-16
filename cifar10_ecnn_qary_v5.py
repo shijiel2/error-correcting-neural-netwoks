@@ -1,4 +1,5 @@
 ﻿from __future__ import print_function
+import argparse
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -15,6 +16,14 @@ from model_qary import SubNetResNet, SharedDense # Or SubNetResNetNoFrontShare, 
 import numpy as np
 import os
 # from scipy.linalg import hadamard # Not used in this script directly, but was an import
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='ECNN')
+    # General parameters
+    parser.add_argument('--exp_name', type=str, default='test', help='Experiment name')
+
+    return parser.parse_args()
+args = parse_args()
 
 # --- PyTorch Setup ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -62,7 +71,7 @@ dir_name_parts = [
     net_name_suffix
 ]
 dir_name = "".join(dir_name_parts)
-save_dir = os.path.join(dir_pwd, 'exps', dir_name)
+save_dir = os.path.join(dir_pwd, args.exp_name, dir_name)
 # PyTorch model saving typically uses .pt or .pth
 model_name_template = 'model_epoch_{epoch:03d}.pt'
 if not os.path.isdir(save_dir):
