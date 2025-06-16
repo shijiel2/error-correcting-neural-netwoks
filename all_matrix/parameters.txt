@@ -1,0 +1,46 @@
+columns     generate_method
+n: 
+        0: total random
+        1 : only row distance
+        2: row+column
+
+n = 10, 20, 25, 30, 40, 50
+path: all_matrix/(n)/0_or_1_or_2/?.txt
+        
+######################    Q-ary folder  #######################        
+
+Q-ary folder:
+columns     generate_method         q-ary codematrix
+n: 
+        R : only row distance
+                                    q:
+        
+        RC: row+column              
+                                    q:
+        
+n = 10, 20, 30, 40
+q = 2-10
+path: all_matrix/Q/(n)/R_or_RC/(q)/?.txt
+
+#####################   3 bit: (-1,1,0)  #####################
+
+3 bit: (-1,1,0)
+columns: n
+
+path: 3bit/(n).txt 
+
+recommend using 50 columns since it's sparse, better to test 30 and 50 both.
+
+####################   double 5 columns to 10 ####################
+
+Rori: 5 column
+Rdup: 10 clumns
+
+path: Dup/5/(R or RC)(ori or dup)/?.txt
+
+
+
+
+
+
+
