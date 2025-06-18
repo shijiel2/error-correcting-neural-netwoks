@@ -1,29 +1,51 @@
 ﻿from __future__ import print_function
+
 import argparse
+import logging
+import os
+import random
+import sys
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader, TensorDataset
 from torchvision import datasets, transforms
-from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 from tqdm import tqdm
 
-from utils_ecnn_qary import FLAGS, lr_schedule, custom_loss_fn, ce_metric_fn, ens_div_metric_fn
 # Note: The model_qary.py conversion is complex. We'll use placeholders or simplified versions.
 # Assuming model_qary_pytorch.py contains the PyTorch model definitions
-from model_qary import SubNetResNet, SharedDense # Or SubNetResNetNoFrontShare, etc.
+from model_qary import (SharedDense,  # Or SubNetResNetNoFrontShare, etc.
+                        SubNetResNet)
+from utils_ecnn_qary import (FLAGS, ce_metric_fn, custom_loss_fn,
+                             ens_div_metric_fn, lr_schedule)
 
-import numpy as np
-import os
 # from scipy.linalg import hadamard # Not used in this script directly, but was an import
 
 def parse_args():
     parser = argparse.ArgumentParser(description='ECNN')
     # General parameters
     parser.add_argument('--exp_name', type=str, default='test', help='Experiment name')
-
+    parser.add_argument('--num_models', type=int, default=30, help='Number of sub-classifiers (n)')
+    parser.add_argument('--batch_size', type=int, default=128, help='Batch size for training')
+    parser.add_argument('--epochs', type=int, default=200, help='Number of epochs to train')
+    parser.add_argument('--log_det_lamda', type=float, default=0.1, help='Lambda for log determinant regularization')
+    parser.add_argument('--cm_path', type=str, default='./all_matrix/100/2/1.txt', help='Path to the codematrix file')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     return parser.parse_args()
 args = parse_args()
+
+def set_random_seed(seed):
+    """Sets the random seed for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 # --- PyTorch Setup ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,10 +56,12 @@ print(f"Using device: {device}")
 FLAGS.indv_CE_lamda = 5.0
 FLAGS.augmentation = True
 FLAGS.dataset = 'cifar10'
-FLAGS.epochs = 200 # Keras FLAGS.epochs
-FLAGS.num_models = 100 # Keras FLAGS.num_models (number of sub-classifiers, n)
-FLAGS.log_det_lamda = 0.5
-FLAGS.batch_size = 128 # Keras FLAGS.batch_size
+FLAGS.epochs = args.epochs # Keras FLAGS.epochs
+FLAGS.num_models = args.num_models # Keras FLAGS.num_models (number of sub-classifiers, n)
+FLAGS.log_det_lamda = args.log_det_lamda
+FLAGS.batch_size = args.batch_size # Keras FLAGS.batch_size
+
+set_random_seed(args.seed)
 
 subtract_pixel_mean = True
 # Dense_code = False # Not directly used in model choice here, but was a flag
@@ -78,15 +102,26 @@ if not os.path.isdir(save_dir):
     os.makedirs(save_dir)
 # filepath_template = os.path.join(save_dir, model_name_template) # Used in loop
 
+# --- Logger Setup ---
+logger = logging.getLogger()
+logger.setLevel(logging.INFO) # Set the lowest-level message to be handled
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+file_handler = logging.FileHandler(os.path.join(save_dir, 'train.log'))
+file_handler.setFormatter(formatter)
+stream_handler = logging.StreamHandler(sys.stdout)
+stream_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+logger.addHandler(stream_handler)
+
 # --- Load Codematrix ---
 # cm is num_classes x FLAGS.num_models (n_total)
 # Example: cm for 10 classes, 30 binary classifiers (q=2) would be (10, 30)
 # Each y_train_code[i,j] would be the target (0 or 1) for sample i, classifier j.
-cm_path = './all_matrix/100/2/1.txt' # This path seems specific
+cm_path = args.cm_path # This path seems specific
 try:
     cm_numpy = np.loadtxt(cm_path)
     if cm_numpy.shape[1] != FLAGS.num_models:
-        print(f"Warning: Loaded CM shape {cm_numpy.shape} second dim does not match FLAGS.num_models {FLAGS.num_models}. Adjusting FLAGS or CM.")
+        logger.info(f"Warning: Loaded CM shape {cm_numpy.shape} second dim does not match FLAGS.num_models {FLAGS.num_models}. Adjusting FLAGS or CM.")
         # Adjusting FLAGS.num_models based on CM for now, or cm should be num_classes x FLAGS.num_models
         # FLAGS.num_models = cm_numpy.shape[1] # If CM dictates the number of subnets
         # Or, ensure cm_numpy is sliced/processed to be num_classes x FLAGS.num_models
@@ -94,10 +129,10 @@ try:
         if cm_numpy.shape[0] != 10: # CIFAR-10 has 10 classes
              raise ValueError(f"Code matrix class dimension {cm_numpy.shape[0]} not 10 for CIFAR-10.")
         cm_numpy = cm_numpy[:, :FLAGS.num_models] # Ensure it's (10, FLAGS.num_models)
-        print(f"Using CM of shape: {cm_numpy.shape}")
+        logger.info(f"Using CM of shape: {cm_numpy.shape}")
 
 except IOError:
-    print(f"Error: Codematrix file not found at {cm_path}. Using a dummy matrix.")
+    logger.info(f"Error: Codematrix file not found at {cm_path}. Using a dummy matrix.")
     num_classes_dataset = 10
     cm_numpy = np.random.randint(0, q, size=(num_classes_dataset, FLAGS.num_models))
 
@@ -170,8 +205,8 @@ test_loader = DataLoader(test_dataset_coded, batch_size=FLAGS.batch_size, shuffl
 n_for_subnet_module = nbits_per_subnet # Number of q-ary classifiers per SubNetResNet module instance
                                        # In Keras, this was set to FLAGS.num_models, implying one large SubNetResNet
 if n_for_subnet_module != FLAGS.num_models:
-    print("Warning: nbits_per_subnet logic from Keras implies it's the 'n' for one SubNetResNet call.")
-    print("Setting n_for_subnet_module = FLAGS.num_models for consistency with Keras single model instance.")
+    logger.info("Warning: nbits_per_subnet logic from Keras implies it's the 'n' for one SubNetResNet call.")
+    logger.info("Setting n_for_subnet_module = FLAGS.num_models for consistency with Keras single model instance.")
     n_for_subnet_module = FLAGS.num_models
 
 
@@ -197,7 +232,7 @@ model = SubNetResNet(
 
 # If multiple GPUs are available
 if torch.cuda.device_count() > 1:
-    print(f"Using {torch.cuda.device_count()} GPUs!")
+    logger.info(f"Using {torch.cuda.device_count()} GPUs!")
     model = nn.DataParallel(model)
 
 # --- Loss Function and Optimizer ---
@@ -219,7 +254,7 @@ div_metric_calculator = ens_div_metric_fn(n=FLAGS.num_models, q=q)
 
 
 # --- Training Loop ---
-print(f"Starting training for {FLAGS.epochs} epochs...")
+logger.info(f"Starting training for {FLAGS.epochs} epochs...")
 best_val_loss = float('inf')
 
 for epoch in tqdm(range(FLAGS.epochs)):
@@ -242,8 +277,8 @@ for epoch in tqdm(range(FLAGS.epochs)):
         running_acc += acc_metric_calculator(outputs.detach(), targets.detach()).item()
         running_div += div_metric_calculator(outputs.detach(), targets.detach()).item() # targets not used by div
         
-        if batch_idx % 100 == 99: # Print every 100 batches
-            print(f"[Epoch {epoch+1}/{FLAGS.epochs}, Batch {batch_idx+1}/{len(train_loader)}] "
+        if batch_idx % 100 == 99: # logger.info every 100 batches
+            logger.info(f"[Epoch {epoch+1}/{FLAGS.epochs}, Batch {batch_idx+1}/{len(train_loader)}] "
                   f"Train Loss: {loss.item():.4f} "
                   f"Train Acc: {acc_metric_calculator(outputs.detach(), targets.detach()).item():.4f} "
                   f"Train Div: {div_metric_calculator(outputs.detach(), targets.detach()).item():.4f}")
@@ -252,7 +287,7 @@ for epoch in tqdm(range(FLAGS.epochs)):
     epoch_train_acc = running_acc / len(train_loader)
     epoch_train_div = running_div / len(train_loader)
     
-    print(f"Epoch {epoch+1} Summary: Train Loss: {epoch_train_loss:.4f}, Train Acc: {epoch_train_acc:.4f}, Train Div: {epoch_train_div:.4f}")
+    logger.info(f"Epoch {epoch+1} Summary: Train Loss: {epoch_train_loss:.4f}, Train Acc: {epoch_train_acc:.4f}, Train Div: {epoch_train_div:.4f}")
 
     # Validation
     model.eval()
@@ -273,14 +308,14 @@ for epoch in tqdm(range(FLAGS.epochs)):
     epoch_val_acc = val_acc / len(test_loader)
     epoch_val_div = val_div / len(test_loader)
     
-    print(f"Epoch {epoch+1} Summary: Val Loss: {epoch_val_loss:.4f}, Val Acc: {epoch_val_acc:.4f}, Val Div: {epoch_val_div:.4f}")
+    logger.info(f"Epoch {epoch+1} Summary: Val Loss: {epoch_val_loss:.4f}, Val Acc: {epoch_val_acc:.4f}, Val Div: {epoch_val_div:.4f}")
 
     # Update learning rate
     current_lr = optimizer.param_groups[0]['lr']
     pt_lr_scheduler.step() # Step LambdaLR based on epoch
     # if using ReduceLROnPlateau: pt_reduce_lr_plateau.step(epoch_val_loss)
     if optimizer.param_groups[0]['lr'] != current_lr:
-        print(f"Learning rate updated to: {optimizer.param_groups[0]['lr']}")
+        logger.info(f"Learning rate updated to: {optimizer.param_groups[0]['lr']}")
 
 
     # Save checkpoint (Keras ModelCheckpoint equivalent)
@@ -292,9 +327,9 @@ for epoch in tqdm(range(FLAGS.epochs)):
         # For DataParallel, save module.state_dict()
         model_state_to_save = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
         torch.save(model_state_to_save, model_save_path)
-        print(f"Epoch {epoch+1}: Validation loss improved to {epoch_val_loss:.4f}, model saved to {model_save_path}")
+        logger.info(f"Epoch {epoch+1}: Validation loss improved to {epoch_val_loss:.4f}, model saved to {model_save_path}")
 
-print("Finished Training.")
+logger.info("Finished Training.")
 
 # To load a model:
 # loaded_model = SubNetResNet(...).to(device) # Create instance
