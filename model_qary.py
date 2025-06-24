@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np # Keep numpy for cm processing if needed before converting to tensor
+from utils_ecnn_qary import code2label, ce_pred_fn
 
 # Note: FLAGS would be imported from utils_ecnn_qary in a real scenario
 # from utils_ecnn_qary import FLAGS
@@ -45,7 +46,7 @@ class LinearDecoder(nn.Module):
         return {'w_shape': self.w.shape}
 
 
-def decoder(inputs, opt='dense', drop_prob=0, cm_numpy=None, num_classes=10, in_features=None):
+def decoder(opt='dense', drop_prob=0, cm_numpy=None, num_classes=10, in_features=None):
     # This function in Keras created layers. In PyTorch, it should return an nn.Sequential or a module.
     # 'inputs' in Keras context is a symbolic tensor. Here, it's not used directly to build.
     # Instead, we return the layer sequence.
@@ -284,6 +285,36 @@ class ResNet_v1(nn.Module):
 
 
 # --- PyTorch equivalent of subnet_resnet and related functions ---
+class SubNetResNetWithDecoder(nn.Module):
+    def __init__(self, backbone, n, q, cm_numpy, device):
+        super().__init__()
+        self.backbone = backbone
+        self.predictor = ce_pred_fn(n=n, q=q)
+        self.cm_tensor = 2 * torch.tensor(cm_numpy, dtype=torch.float32).to(device) - 1
+ 
+    def forward(self, x_input, return_type='code_binary'):
+        """
+        return_type:
+        - 'code_binary': returns binary code (0, 1) for each classifier
+        - 'code_real': returns real-valued code in [-1, 1] for each classifier
+        - 'label_binary': returns the label index with highest correlation to the code_binary
+        - 'label_real': returns the label index with highest correlation to the code_real
+        """
+        # Backbone output is (batch, n_total_classifiers * q_val) logits
+        backbone_logits = self.backbone(x_input)
+        if return_type == 'code_binary':
+            return self.predictor(backbone_logits)
+        elif return_type == 'code_real':
+            return self.predictor(backbone_logits, return_real=True)
+        elif return_type == 'label_binary':
+            code_binary = self.predictor(backbone_logits)
+            return code2label(code_binary, self.cm_tensor)
+        elif return_type == 'label_real':
+            code_real = self.predictor(backbone_logits, return_real=True)
+            return code2label(code_real, self.cm_tensor)
+        else:
+            raise ValueError(f"Unknown return_type: {return_type}. Must be one of 'code_binary', 'code_real', 'label_binary', 'label_real'.")
+
 
 class SubNetResNet(nn.Module):
     def __init__(self, input_shape, n, depth, dataset, stack_split, res_block_split, q_out_features, shared_dense_out_features=32, use_shared_dense_for_subnet_output=True):

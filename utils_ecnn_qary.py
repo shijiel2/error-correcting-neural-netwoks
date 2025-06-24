@@ -162,6 +162,38 @@ def ce_metric_fn(n, q): # type argument removed as it's not used in Keras versio
         return acc / n
     return ce_acc
 
+def ce_pred_fn(n, q): # type argument removed as it's not used in Keras version's logic
+    assert q == 2, "This function is designed for binary classification (q=2)."
+    def ce_predictor(y_pred_logits, return_real=False):
+        # y_pred_logits: (batch_size, n*q)
+        y_pred_logits_split = torch.split(y_pred_logits, q, dim=-1)
+        
+        pred = torch.zeros((y_pred_logits.size(0), n), device=y_pred_logits.device) # (batch_size, n)
+        for i in range(n):
+            y_p_i_logits = y_pred_logits_split[i] # (batch_size, q)
+            
+            # Get predicted class indices
+            if not return_real:
+                pred_slice = torch.argmax(F.softmax(y_p_i_logits, dim=1), dim=1)
+                # Convert to -1, 1 for binary classification
+                pred_slice = 2 * pred_slice.float() - 1
+            else:
+                # First map the logits difference to range [-1, 1], and then return the maximum value
+                pred_slice = torch.tanh(y_p_i_logits[:,1]-y_p_i_logits[:,0]) # Assuming q=2 for binary classification
+
+            pred[:, i] = pred_slice
+
+        return pred
+    return ce_predictor
+
+def code2label(code, code_matrix):
+
+    # return the label index with highest correlation
+    correlation = torch.matmul(code.float(), code_matrix.T)
+    label_index = torch.argmax(correlation, dim=1)
+
+    return label_index    
+
 if __name__ == '__main__':
     # Example usage of FLAGS
     print(f"Number of models from FLAGS: {FLAGS.num_models}")
